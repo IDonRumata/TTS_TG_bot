@@ -70,7 +70,7 @@ async def handle_text(message: Message):
         for i, chunk in enumerate(chunks):
             ogg_path = None
             try:
-                ogg_path = text_to_ogg(chunk)
+                ogg_path = await text_to_ogg(chunk)
                 voice = FSInputFile(ogg_path)
                 await message.answer_voice(voice)
             finally:

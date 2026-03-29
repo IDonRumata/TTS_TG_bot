@@ -1,5 +1,5 @@
 aiogram>=3.4.0
 python-dotenv>=1.0.1
 deep-translator>=1.11.4
-gTTS>=2.5.1
 langdetect>=1.0.9
+edge-tts>=6.1.9

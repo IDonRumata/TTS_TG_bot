@@ -5,8 +5,15 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    volumes:
+      - tts_data:/app/data
+    ports:
+      - "8444:8444"
     logging:
       driver: "json-file"
       options:
         max-size: "5m"
         max-file: "3"
+
+volumes:
+  tts_data:

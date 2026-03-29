@@ -65,19 +65,63 @@ def _is_allowed_cb(callback: CallbackQuery) -> bool:
 async def cmd_start(message: Message):
     if not _is_allowed(message):
         return
-    await get_or_create_user(
+    user = await get_or_create_user(
         message.from_user.id,
         message.from_user.username or "",
         message.from_user.first_name or ""
     )
+    name = message.from_user.first_name or "друг"
+
+    # Приветствие
     await message.answer(
-        "Привет! Отправь текст — озвучу голосовым сообщением.\n"
-        "Поддерживаю 🇷🇺 русский и 🇺🇸 английский.\n\n"
-        f"🆓 Бесплатно: 3 000 символов в день\n"
-        f"💡 /plans — тарифы и оплата\n"
-        f"📊 /status — твой лимит\n"
-        f"⚙️ /settings — голос и язык",
+        f"👋 Привет, {name}!\n\n"
+        f"Я озвучиваю любой текст живым голосом — "
+        f"статьи, книги, посты, переписку.\n\n"
+        f"🎙 *Что умею:*\n"
+        f"• Озвучиваю русский и английский текст\n"
+        f"• Перевожу английский на русский автоматически\n"
+        f"• 4 голоса на выбор: Светлана, Дмитрий, Jenny, Guy\n"
+        f"• Разбиваю длинные тексты на части сам\n"
+        f"• Работает прямо в Telegram — без приложений\n\n"
+        f"📩 Просто отправь любой текст — и получишь голосовое!",
+        parse_mode="Markdown",
         reply_markup=MAIN_KEYBOARD
+    )
+
+    # Тарифы
+    await message.answer(
+        f"💳 *Тарифы*\n\n"
+        f"🆓 *Бесплатно* — навсегда\n"
+        f"• 3 000 символов в день (~2 страницы текста)\n"
+        f"• 2 базовых голоса\n\n"
+        f"⭐ *Базовый* — 500⭐/мес или 20 BYN/мес\n"
+        f"• 300 000 символов в месяц (~200 страниц)\n"
+        f"• Все 4 голоса\n"
+        f"• Год: 4 800⭐ или 190 BYN (экономия 20%)\n\n"
+        f"🚀 *Про* — 1 200⭐/мес или 50 BYN/мес\n"
+        f"• 3 000 000 символов в месяц (~2 000 страниц)\n"
+        f"• Все голоса, приоритет обработки\n"
+        f"• Год: 11 520⭐ или 480 BYN (экономия 20%)\n\n"
+        f"🎁 Попробуй 3 дня Базового бесплатно → /trial",
+        parse_mode="Markdown"
+    )
+
+    # Оплата и команды
+    await message.answer(
+        f"💰 *Способы оплаты*\n\n"
+        f"⭐ *Telegram Stars* — мгновенно, без комиссии\n"
+        f"  Купить Stars: Settings → My Stars\n\n"
+        f"🏦 *bePaid* — карты Visa/Mastercard, БЕЛКАРТ, ЕРИП\n"
+        f"  Для пользователей Беларуси\n\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"📋 *Команды:*\n"
+        f"/trial — 3 дня бесплатно\n"
+        f"/plans — оплатить тариф\n"
+        f"/status — мой тариф и лимиты\n"
+        f"/settings — голос и язык\n"
+        f"/help — помощь\n\n"
+        f"❓ Вопросы по оплате: /paysupport",
+        parse_mode="Markdown"
     )
 
 

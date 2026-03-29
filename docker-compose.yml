@@ -1,0 +1,14 @@
+services:
+  tts-bot:
+    build: .
+    container_name: tts-tg-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./bot.log:/app/bot.log
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "3"

@@ -1,6 +1,9 @@
 import logging
 from aiogram import Router, F
-from aiogram.types import Message, FSInputFile, CallbackQuery, InlineKeyboardMarkup
+from aiogram.types import (
+    Message, FSInputFile, CallbackQuery, InlineKeyboardMarkup,
+    ReplyKeyboardMarkup, KeyboardButton
+)
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from config import ALLOWED_USERS, MAX_TEXT_LENGTH
 from translate import translate_text
@@ -11,6 +14,13 @@ import user_settings as us
 logger = logging.getLogger(__name__)
 router = Router()
 rate_limiter = RateLimiter()
+
+# Постоянная клавиатура с кнопкой настроек
+MAIN_KEYBOARD = ReplyKeyboardMarkup(
+    keyboard=[[KeyboardButton(text="⚙️ Настройки")]],
+    resize_keyboard=True,
+    input_field_placeholder="Отправь текст для озвучки..."
+)
 
 
 # ─── Клавиатура настроек ────────────────────────────────────────────────────
@@ -43,8 +53,8 @@ async def cmd_start(message: Message):
     await message.answer(
         "Привет! Отправь текст — озвучу голосовым сообщением.\n"
         "Поддерживаю 🇷🇺 русский и 🇺🇸 английский.\n"
-        f"Лимит: {MAX_TEXT_LENGTH} символов.\n\n"
-        "⚙️ /settings — настройки голоса и языка"
+        f"Лимит: {MAX_TEXT_LENGTH} символов.",
+        reply_markup=MAIN_KEYBOARD
     )
 
 
@@ -55,12 +65,13 @@ async def cmd_help(message: Message):
     await message.answer(
         "Просто отправь текст — получишь голосовое.\n"
         "Текст автоматически переводится на выбранный язык.\n\n"
-        "⚙️ /settings — выбор языка и голоса\n"
-        f"Лимит: {MAX_TEXT_LENGTH} символов."
+        "⚙️ Кнопка «Настройки» — выбор языка и голоса\n"
+        f"Лимит: {MAX_TEXT_LENGTH} символов.",
+        reply_markup=MAIN_KEYBOARD
     )
 
 
-@router.message(F.text == "/settings")
+@router.message(F.text.in_({"/settings", "⚙️ Настройки"}))
 async def cmd_settings(message: Message):
     if not _is_allowed(message):
         return

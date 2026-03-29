@@ -26,8 +26,8 @@ HELP_TEXT = """
 🔧 *Админ-команды*
 
 👤 *Пользователи:*
-`/grant <id> <план> [дней]` — выдать план бесплатно
-  Планы: `basic`, `pro`  |  Дней по умолчанию: 30
+`/grant <id> <план> [дней|forever]` — выдать план бесплатно
+  Планы: `basic`, `pro`  |  `forever` — бессрочно
 `/revoke <id>` — сбросить до бесплатного
 `/ban <id>` — забанить пользователя
 `/unban <id>` — разбанить
@@ -73,35 +73,54 @@ async def cmd_grant(message: Message):
 
     parts = message.text.split()
     if len(parts) < 3:
-        await message.answer("Использование: `/grant <user_id> <basic|pro> [дней]`", parse_mode="Markdown")
+        await message.answer(
+            "Использование:\n"
+            "`/grant <user_id> <basic|pro> [дней]`\n"
+            "`/grant <user_id> <basic|pro> forever` — бессрочно\n\n"
+            "Примеры:\n"
+            "`/grant 123456789 pro forever` — вечный Pro\n"
+            "`/grant 123456789 basic 30` — Basic на 30 дней",
+            parse_mode="Markdown"
+        )
         return
 
     try:
         user_id = int(parts[1])
         plan_id = parts[2].lower()
-        days = int(parts[3]) if len(parts) > 3 else 30
-    except ValueError:
-        await message.answer("❌ Неверный формат. Пример: `/grant 123456789 basic 30`", parse_mode="Markdown")
+        period_arg = parts[3].lower() if len(parts) > 3 else "30"
+    except (ValueError, IndexError):
+        await message.answer("❌ Неверный формат. Пример: `/grant 123456789 pro forever`", parse_mode="Markdown")
         return
 
     if plan_id not in ("basic", "pro"):
         await message.answer("❌ План должен быть `basic` или `pro`", parse_mode="Markdown")
         return
 
+    # forever / lifetime / 0 → бессрочно
+    if period_arg in ("forever", "lifetime", "0", "∞"):
+        days = 0
+        duration_label = "навсегда 🔑"
+    else:
+        try:
+            days = int(period_arg)
+            duration_label = f"на {days} дней"
+        except ValueError:
+            await message.answer("❌ Укажи количество дней или `forever`", parse_mode="Markdown")
+            return
+
     await get_or_create_user(user_id)
     await admin_grant_plan(user_id, plan_id, days)
     plan_name = PLANS[plan_id]["name"]
 
     await message.answer(
-        f"✅ Пользователю `{user_id}` выдан план *{plan_name}* на {days} дней.",
+        f"✅ Пользователю `{user_id}` выдан *{plan_name}* {duration_label}.",
         parse_mode="Markdown"
     )
 
-    # Уведомляем пользователя
     try:
         await message.bot.send_message(
             user_id,
-            f"🎁 Вам выдан бесплатный доступ к тарифу *{plan_name}* на {days} дней!\n"
+            f"🎁 Вам выдан доступ к тарифу *{plan_name}* {duration_label}!\n"
             f"Проверь: /status",
             parse_mode="Markdown"
         )

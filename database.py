@@ -207,7 +207,7 @@ async def check_expired_subscriptions() -> list[int]:
     async with pool.acquire() as conn:
         async with conn.transaction():
             rows = await conn.fetch(
-                "SELECT user_id FROM subscriptions WHERE status='active' AND expires_at < NOW()"
+                "SELECT user_id FROM subscriptions WHERE status='active' AND expires_at IS NOT NULL AND expires_at < NOW()"
             )
             for row in rows:
                 expired.append(row["user_id"])
@@ -225,7 +225,11 @@ async def check_expired_subscriptions() -> list[int]:
 # ── Админ-функции ─────────────────────────────────────────────────────────────
 
 async def admin_grant_plan(user_id: int, plan: str, days: int) -> None:
-    expires = datetime.utcnow() + timedelta(days=days)
+    """
+    Выдаёт план пользователю бесплатно.
+    days=0 означает бессрочный (lifetime) доступ — expires_at = NULL.
+    """
+    expires = None if days == 0 else datetime.utcnow() + timedelta(days=days)
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.transaction():
@@ -242,7 +246,8 @@ async def admin_grant_plan(user_id: int, plan: str, days: int) -> None:
                 "UPDATE users SET plan=$1, updated_at=NOW() WHERE id=$2",
                 plan, user_id
             )
-    logger.info("Админ выдал план: user=%s plan=%s дней=%s", user_id, plan, days)
+    label = "lifetime" if days == 0 else f"{days} дней"
+    logger.info("Админ выдал план: user=%s plan=%s срок=%s", user_id, plan, label)
 
 
 async def admin_revoke_plan(user_id: int) -> None:

@@ -235,3 +235,131 @@ async def check_expired_subscriptions() -> list[int]:
             )
         await db.commit()
     return expired_users
+
+
+# ── Админ-функции ─────────────────────────────────────────────────────────────
+
+async def admin_grant_plan(
+    user_id: int, plan: str, days: int
+) -> None:
+    """Выдаёт план пользователю бесплатно на указанное количество дней."""
+    expires = datetime.utcnow() + timedelta(days=days)
+    async with aiosqlite.connect(DB_PATH) as db:
+        # Деактивируем предыдущую подписку
+        await db.execute(
+            "UPDATE subscriptions SET status='expired' WHERE user_id=? AND status='active'",
+            (user_id,)
+        )
+        await db.execute(
+            """INSERT INTO subscriptions
+               (user_id, plan, status, provider, expires_at, amount, currency)
+               VALUES (?, ?, 'active', 'admin', ?, 0, 'FREE')""",
+            (user_id, plan, expires.isoformat())
+        )
+        await db.execute(
+            "UPDATE users SET plan=?, updated_at=datetime('now') WHERE id=?",
+            (plan, user_id)
+        )
+        await db.commit()
+    logger.info("Админ выдал план: user=%s plan=%s дней=%s", user_id, plan, days)
+
+
+async def admin_revoke_plan(user_id: int) -> None:
+    """Сбрасывает план пользователя до бесплатного."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE subscriptions SET status='revoked' WHERE user_id=? AND status='active'",
+            (user_id,)
+        )
+        await db.execute(
+            "UPDATE users SET plan='free', updated_at=datetime('now') WHERE id=?",
+            (user_id,)
+        )
+        await db.commit()
+    logger.info("Админ отозвал план у user=%s", user_id)
+
+
+async def admin_ban_user(user_id: int) -> None:
+    """Банит пользователя (устанавливает plan='banned')."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE users SET plan='banned', updated_at=datetime('now') WHERE id=?",
+            (user_id,)
+        )
+        await db.commit()
+
+
+async def admin_unban_user(user_id: int) -> None:
+    """Разбанивает пользователя (возвращает на free)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE users SET plan='free', updated_at=datetime('now') WHERE id=?",
+            (user_id,)
+        )
+        await db.commit()
+
+
+async def admin_get_stats() -> dict:
+    """Общая статистика бота."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        total   = (await (await db.execute("SELECT COUNT(*) FROM users")).fetchone())[0]
+        paid    = (await (await db.execute(
+            "SELECT COUNT(*) FROM users WHERE plan IN ('basic','pro')"
+        )).fetchone())[0]
+        banned  = (await (await db.execute(
+            "SELECT COUNT(*) FROM users WHERE plan='banned'"
+        )).fetchone())[0]
+        today   = str(date.today())
+        new_today = (await (await db.execute(
+            "SELECT COUNT(*) FROM users WHERE reset_date=?", (today,)
+        )).fetchone())[0]
+        payments_total = (await (await db.execute(
+            "SELECT COUNT(*) FROM payments WHERE status='successful'"
+        )).fetchone())[0]
+    return {
+        "total": total,
+        "paid": paid,
+        "free": total - paid - banned,
+        "banned": banned,
+        "new_today": new_today,
+        "payments_total": payments_total,
+    }
+
+
+async def admin_get_user_info(user_id: int) -> dict | None:
+    """Информация о конкретном пользователе."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute("SELECT * FROM users WHERE id=?", (user_id,))
+        row = await cur.fetchone()
+        if not row:
+            return None
+        user = dict(row)
+        cur2 = await db.execute(
+            "SELECT * FROM subscriptions WHERE user_id=? ORDER BY started_at DESC LIMIT 3",
+            (user_id,)
+        )
+        subs = [dict(r) for r in await cur2.fetchall()]
+        user["subscriptions"] = subs
+        return user
+
+
+async def admin_list_users(limit: int = 20, offset: int = 0) -> list[dict]:
+    """Список последних пользователей."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT id, username, first_name, plan, created_at FROM users "
+            "ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            (limit, offset)
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+
+async def get_all_user_ids() -> list[int]:
+    """Все user_id для рассылки."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "SELECT id FROM users WHERE plan != 'banned'"
+        )
+        return [row[0] for row in await cur.fetchall()]

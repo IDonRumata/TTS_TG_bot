@@ -15,6 +15,14 @@ ALLOWED_USERS = [
     if uid.strip().isdigit()
 ]
 
+# Администраторы — могут выдавать планы, смотреть статистику, делать рассылку
+admin_users_str = os.getenv("ADMIN_IDS", "")
+ADMIN_IDS = [
+    int(uid.strip())
+    for uid in admin_users_str.split(",")
+    if uid.strip().isdigit()
+]
+
 # ── Лимиты ────────────────────────────────────────────────────────────────────
 MAX_TEXT_LENGTH = 5_000
 CHUNK_SIZE      = 900

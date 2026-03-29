@@ -1,5 +1,6 @@
 import logging
 from aiogram import Router, F
+from aiogram.filters import Command
 from aiogram.types import (
     Message, FSInputFile, CallbackQuery,
     InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
@@ -13,7 +14,7 @@ from utils import split_text, clean_text, RateLimiter
 from plans import PLANS, FREE_VOICES, plan_description, get_plan
 from database import (
     get_or_create_user, update_user_settings,
-    check_and_add_chars, get_user_stats
+    check_and_add_chars, get_user_stats, admin_grant_plan
 )
 import user_settings as us
 from payments_stars import plans_keyboard_stars
@@ -142,6 +143,67 @@ async def cmd_paysupport(message: Message):
     await message.answer(
         "Если у тебя вопрос по оплате или нужен возврат средств — напиши сюда.\n"
         "Мы ответим в течение 24 часов."
+    )
+
+
+@router.message(Command("feedback"))
+async def cmd_feedback(message: Message):
+    """Пользователь отправляет отзыв — он летит администраторам."""
+    if not _is_allowed(message):
+        return
+    text = message.text.removeprefix("/feedback").strip()
+    if not text:
+        await message.answer(
+            "Напиши отзыв после команды:\n`/feedback Здесь твой текст`",
+            parse_mode="Markdown"
+        )
+        return
+
+    from config import ADMIN_IDS
+    username = f"@{message.from_user.username}" if message.from_user.username else message.from_user.first_name
+    for admin_id in ADMIN_IDS:
+        try:
+            await message.bot.send_message(
+                admin_id,
+                f"📩 *Отзыв от пользователя*\n\n"
+                f"От: {username} (`{message.from_user.id}`)\n\n"
+                f"{text}",
+                parse_mode="Markdown"
+            )
+        except Exception:
+            pass
+    await message.answer("✅ Спасибо! Отзыв отправлен.")
+
+
+@router.message(Command("trial"))
+async def cmd_trial(message: Message):
+    """Пробный период — Basic на 3 дня (каждый пользователь один раз)."""
+    if not _is_allowed(message):
+        return
+    await get_or_create_user(message.from_user.id)
+
+    from database import admin_get_user_info
+    info = await admin_get_user_info(message.from_user.id)
+
+    # Проверяем, не было ли уже триала (была ли хоть одна подписка)
+    if info and info.get("subscriptions"):
+        await message.answer(
+            "ℹ️ Пробный период уже был использован.\n"
+            "Подключи тариф: /plans"
+        )
+        return
+
+    if info and info["plan"] != "free":
+        await message.answer("У тебя уже активный тариф! /status")
+        return
+
+    await admin_grant_plan(message.from_user.id, "basic", 3)
+    await message.answer(
+        "🎁 *Пробный период активирован!*\n\n"
+        "Тариф ⭐ Базовый на 3 дня — бесплатно.\n"
+        "300 000 символов в месяц, все голоса.\n\n"
+        "Проверь: /status",
+        parse_mode="Markdown"
     )
 
 

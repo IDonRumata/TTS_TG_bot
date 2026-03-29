@@ -4,6 +4,7 @@ from aiogram import Bot, Dispatcher
 from config import BOT_TOKEN, WEBHOOK_PORT
 from handlers import router as main_router
 from payments_stars import router as stars_router
+from admin_handlers import router as admin_router
 from database import init_db, check_expired_subscriptions
 from webhook_server import start_webhook_server, set_bot
 
@@ -44,6 +45,7 @@ async def main():
     set_bot(bot)
 
     dp = Dispatcher()
+    dp.include_router(admin_router)   # первым — чтобы перехватывал до основного
     dp.include_router(stars_router)
     dp.include_router(main_router)
 

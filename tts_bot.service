@@ -1,0 +1,15 @@
+[Unit]
+Description=TTS Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+User=botuser
+WorkingDirectory=/opt/tts_tg_bot
+ExecStart=/opt/tts_tg_bot/.venv/bin/python bot.py
+Restart=on-failure
+RestartSec=10
+EnvironmentFile=/opt/tts_tg_bot/.env
+
+[Install]
+WantedBy=multi-user.target

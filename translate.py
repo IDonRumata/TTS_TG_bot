@@ -12,18 +12,18 @@ def detect_language(text: str) -> str:
         logger.info("Определён язык: %s", lang)
         return lang
     except LangDetectException:
-        logger.warning("Не удалось определить язык, считаем русским")
+        logger.warning("Не удалось определить язык")
         return "ru"
 
 
-def translate_to_russian(text: str) -> str:
-    """Переводит текст на русский, если он не на русском."""
-    lang = detect_language(text)
-    if lang == "ru":
+def translate_text(text: str, target_lang: str) -> str:
+    """Переводит текст на target_lang ('ru' или 'en'), если он уже на нём — возвращает как есть."""
+    src_lang = detect_language(text)
+    if src_lang == target_lang:
         return text
     try:
-        translated = GoogleTranslator(source="auto", target="ru").translate(text)
-        logger.info("Текст переведён с %s на русский", lang)
+        translated = GoogleTranslator(source="auto", target=target_lang).translate(text)
+        logger.info("Переведено с %s на %s", src_lang, target_lang)
         return translated
     except Exception as e:
         logger.error("Ошибка перевода: %s", e)

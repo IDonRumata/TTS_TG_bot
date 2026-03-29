@@ -4,13 +4,12 @@ import subprocess
 import tempfile
 
 import edge_tts
+from user_settings import DEFAULT_VOICE
 
 logger = logging.getLogger(__name__)
 
-VOICE = "ru-RU-SvetlanaNeural"  # женский, или "ru-RU-DmitryNeural" для мужского
 
-
-async def text_to_ogg(text: str) -> str:
+async def text_to_ogg(text: str, voice: str = DEFAULT_VOICE) -> str:
     """Озвучивает текст через edge-tts и возвращает путь к .ogg файлу."""
     tmp_mp3 = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
     tmp_mp3.close()
@@ -18,7 +17,7 @@ async def text_to_ogg(text: str) -> str:
     tmp_ogg.close()
 
     try:
-        communicate = edge_tts.Communicate(text, voice=VOICE)
+        communicate = edge_tts.Communicate(text, voice=voice)
         await communicate.save(tmp_mp3.name)
 
         subprocess.run(
@@ -26,7 +25,7 @@ async def text_to_ogg(text: str) -> str:
              tmp_ogg.name, "-y", "-loglevel", "quiet"],
             check=True
         )
-        logger.info("Аудио готово: %d символов", len(text))
+        logger.info("Аудио готово: %d символов, голос: %s", len(text), voice)
         return tmp_ogg.name
     except Exception as e:
         if os.path.exists(tmp_ogg.name):

@@ -4,7 +4,7 @@ from aiogram.types import Message, FSInputFile
 from config import ALLOWED_USERS, MAX_TEXT_LENGTH
 from translate import translate_to_russian
 from tts import text_to_ogg, cleanup_file
-from utils import split_text, RateLimiter
+from utils import split_text, clean_text, RateLimiter
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -60,6 +60,9 @@ async def handle_text(message: Message):
     try:
         # Перевод если нужно
         russian_text = translate_to_russian(text)
+
+        # Очистка от символов, которые TTS произносит вслух
+        russian_text = clean_text(russian_text)
 
         # Разбиваем на части
         chunks = split_text(russian_text)

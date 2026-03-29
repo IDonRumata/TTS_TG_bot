@@ -1,9 +1,23 @@
 import logging
+import re
 import time
 from collections import defaultdict
 from config import CHUNK_SIZE, RATE_LIMIT, RATE_WINDOW
 
 logger = logging.getLogger(__name__)
+
+
+def clean_text(text: str) -> str:
+    """Убирает символы, которые TTS произносит вслух, оставляет слова и знаки препинания."""
+    # Заменяем URL на "ссылка"
+    text = re.sub(r'https?://\S+', 'ссылка', text)
+    # Убираем спецсимволы: кавычки, скобки, слеши, решётки, звёздочки и т.д.
+    text = re.sub(r'[\"\'«»„""\(\)\[\]{}/\\|#@$%^&*+=~`<>]', ' ', text)
+    # Тире и дефисы — заменяем на паузу (запятая)
+    text = re.sub(r'\s[-–—]+\s', ', ', text)
+    # Убираем множественные пробелы
+    text = re.sub(r' {2,}', ' ', text)
+    return text.strip()
 
 
 def split_text(text: str, max_length: int = CHUNK_SIZE) -> list[str]:

@@ -1,6 +1,5 @@
 import asyncio
 import logging
-from logging.handlers import RotatingFileHandler
 from aiogram import Bot, Dispatcher
 from config import BOT_TOKEN
 from handlers import router
@@ -9,12 +8,7 @@ from handlers import router
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
-    handlers=[
-        logging.StreamHandler(),
-        RotatingFileHandler(
-            "bot.log", maxBytes=5_000_000, backupCount=3, encoding="utf-8"
-        ),
-    ],
+    handlers=[logging.StreamHandler()],
 )
 logger = logging.getLogger(__name__)
 

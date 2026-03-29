@@ -5,15 +5,36 @@ services:
     restart: unless-stopped
     env_file:
       - .env
-    volumes:
-      - tts_data:/app/data
+    environment:
+      - DATABASE_URL=postgresql://tts_user:${POSTGRES_PASSWORD}@tts-db/tts_bot
     ports:
       - "8444:8444"
+    depends_on:
+      tts-db:
+        condition: service_healthy
     logging:
       driver: "json-file"
       options:
         max-size: "5m"
         max-file: "3"
 
+  tts-db:
+    image: postgres:16-alpine
+    container_name: tts-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: tts_bot
+      POSTGRES_USER: tts_user
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - tts_postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"        # внешний порт 5433, чтобы не конфликтовать с fin-reboot
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tts_user -d tts_bot"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
 volumes:
-  tts_data:
+  tts_postgres_data:

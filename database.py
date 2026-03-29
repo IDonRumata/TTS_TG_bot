@@ -1,168 +1,166 @@
-"""Асинхронная БД (SQLite через aiosqlite)."""
+"""Асинхронная БД — PostgreSQL через asyncpg."""
 
-import aiosqlite
+import asyncpg
 import logging
+import os
 from datetime import date, datetime, timedelta
-from pathlib import Path
 
 logger = logging.getLogger(__name__)
-DB_PATH = Path("data/tts_bot.db")
+
+DATABASE_URL = os.getenv("DATABASE_URL", "")
+_pool: asyncpg.Pool | None = None
+
+
+async def get_pool() -> asyncpg.Pool:
+    global _pool
+    if _pool is None:
+        _pool = await asyncpg.create_pool(DATABASE_URL, min_size=2, max_size=10)
+    return _pool
 
 
 async def init_db() -> None:
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.executescript("""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS users (
-                id              INTEGER PRIMARY KEY,
+                id              BIGINT PRIMARY KEY,
                 username        TEXT,
                 first_name      TEXT,
-                plan            TEXT    DEFAULT 'free',
-                language        TEXT    DEFAULT 'ru',
-                voice           TEXT    DEFAULT 'ru-RU-SvetlanaNeural',
-                chars_today     INTEGER DEFAULT 0,
-                chars_month     INTEGER DEFAULT 0,
-                reset_date      TEXT    DEFAULT '',
-                reset_month     TEXT    DEFAULT '',
-                created_at      TEXT    DEFAULT (datetime('now')),
-                updated_at      TEXT    DEFAULT (datetime('now'))
+                plan            TEXT        DEFAULT 'free',
+                language        TEXT        DEFAULT 'ru',
+                voice           TEXT        DEFAULT 'ru-RU-SvetlanaNeural',
+                chars_today     INTEGER     DEFAULT 0,
+                chars_month     INTEGER     DEFAULT 0,
+                reset_date      DATE        DEFAULT CURRENT_DATE,
+                reset_month     TEXT        DEFAULT to_char(CURRENT_DATE,'YYYY-MM'),
+                created_at      TIMESTAMPTZ DEFAULT NOW(),
+                updated_at      TIMESTAMPTZ DEFAULT NOW()
             );
 
             CREATE TABLE IF NOT EXISTS subscriptions (
-                id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id         INTEGER NOT NULL,
-                plan            TEXT    NOT NULL,
-                status          TEXT    DEFAULT 'active',
+                id              SERIAL PRIMARY KEY,
+                user_id         BIGINT      NOT NULL REFERENCES users(id),
+                plan            TEXT        NOT NULL,
+                status          TEXT        DEFAULT 'active',
                 provider        TEXT,
-                started_at      TEXT    DEFAULT (datetime('now')),
-                expires_at      TEXT,
-                amount          REAL,
+                started_at      TIMESTAMPTZ DEFAULT NOW(),
+                expires_at      TIMESTAMPTZ,
+                amount          NUMERIC(10,2),
                 currency        TEXT
             );
 
             CREATE TABLE IF NOT EXISTS payments (
-                id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id         INTEGER NOT NULL,
+                id              SERIAL PRIMARY KEY,
+                user_id         BIGINT      NOT NULL,
                 provider        TEXT,
                 provider_id     TEXT,
-                amount          REAL,
+                amount          NUMERIC(10,2),
                 currency        TEXT,
                 plan            TEXT,
                 period          TEXT,
-                status          TEXT    DEFAULT 'pending',
-                created_at      TEXT    DEFAULT (datetime('now'))
+                status          TEXT        DEFAULT 'pending',
+                created_at      TIMESTAMPTZ DEFAULT NOW()
             );
         """)
-        await db.commit()
-    logger.info("БД инициализирована: %s", DB_PATH)
+    logger.info("БД инициализирована (PostgreSQL)")
 
 
-# ── Пользователи ─────────────────────────────────────────────────────────────
+# ── Пользователи ──────────────────────────────────────────────────────────────
 
 async def get_or_create_user(user_id: int, username: str = "", first_name: str = "") -> dict:
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        cur = await db.execute("SELECT * FROM users WHERE id = ?", (user_id,))
-        row = await cur.fetchone()
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT * FROM users WHERE id=$1", user_id)
         if row:
             return dict(row)
-        today = str(date.today())
-        await db.execute(
-            """INSERT INTO users (id, username, first_name, reset_date, reset_month)
-               VALUES (?, ?, ?, ?, ?)""",
-            (user_id, username, first_name, today, today[:7])
+        row = await conn.fetchrow(
+            """INSERT INTO users (id, username, first_name)
+               VALUES ($1, $2, $3)
+               ON CONFLICT (id) DO UPDATE SET
+                 username=EXCLUDED.username,
+                 first_name=EXCLUDED.first_name,
+                 updated_at=NOW()
+               RETURNING *""",
+            user_id, username, first_name
         )
-        await db.commit()
-        cur = await db.execute("SELECT * FROM users WHERE id = ?", (user_id,))
-        return dict(await cur.fetchone())
+        return dict(row)
 
 
 async def update_user_settings(user_id: int, language: str, voice: str) -> None:
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            "UPDATE users SET language=?, voice=?, updated_at=datetime('now') WHERE id=?",
-            (language, voice, user_id)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE users SET language=$1, voice=$2, updated_at=NOW() WHERE id=$3",
+            language, voice, user_id
         )
-        await db.commit()
 
 
 async def get_user_plan(user_id: int) -> str:
-    async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute("SELECT plan FROM users WHERE id=?", (user_id,))
-        row = await cur.fetchone()
-        return row[0] if row else "free"
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT plan FROM users WHERE id=$1", user_id)
+        return row["plan"] if row else "free"
 
 
 # ── Лимиты символов ───────────────────────────────────────────────────────────
 
 async def check_and_add_chars(user_id: int, chars: int) -> tuple[bool, str]:
-    """
-    Проверяет и добавляет символы пользователю.
-    Возвращает (разрешено: bool, сообщение об ошибке: str).
-    """
     from plans import PLANS
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        cur = await db.execute("SELECT * FROM users WHERE id=?", (user_id,))
-        user = dict(await cur.fetchone())
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT * FROM users WHERE id=$1", user_id)
+        if not row:
+            return False, "Пользователь не найден."
 
-        today = str(date.today())
-        this_month = today[:7]
-        plan = PLANS.get(user["plan"], PLANS["free"])
+        today = date.today()
+        this_month = today.strftime("%Y-%m")
+        plan = PLANS.get(row["plan"], PLANS["free"])
 
-        # Сброс дневного счётчика
-        chars_today = user["chars_today"] if user["reset_date"] == today else 0
-        # Сброс месячного счётчика
-        chars_month = user["chars_month"] if user["reset_month"] == this_month else 0
+        chars_today = row["chars_today"] if row["reset_date"] == today else 0
+        chars_month = row["chars_month"] if row["reset_month"] == this_month else 0
 
-        # Проверка дневного лимита
         if plan["chars_per_day"] and chars_today + chars > plan["chars_per_day"]:
-            remaining = plan["chars_per_day"] - chars_today
+            remaining = max(0, plan["chars_per_day"] - chars_today)
             return False, (
                 f"⛔ Дневной лимит: {plan['chars_per_day']:,} символов.\n"
-                f"Осталось сегодня: {max(0, remaining):,} симв.\n"
-                f"💡 Обновите тариф командой /plans"
+                f"Осталось сегодня: {remaining:,} симв.\n"
+                f"💡 Обновите тариф: /plans"
             )
 
-        # Проверка месячного лимита
         if plan["chars_per_month"] and chars_month + chars > plan["chars_per_month"]:
-            remaining = plan["chars_per_month"] - chars_month
+            remaining = max(0, plan["chars_per_month"] - chars_month)
             return False, (
                 f"⛔ Месячный лимит: {plan['chars_per_month']:,} символов.\n"
-                f"Осталось в этом месяце: {max(0, remaining):,} симв.\n"
-                f"💡 Обновите тариф командой /plans"
+                f"Осталось в месяце: {remaining:,} симв.\n"
+                f"💡 Обновите тариф: /plans"
             )
 
-        # Записываем
-        await db.execute(
+        await conn.execute(
             """UPDATE users SET
-               chars_today=?, chars_month=?,
-               reset_date=?, reset_month=?,
-               updated_at=datetime('now')
-               WHERE id=?""",
-            (chars_today + chars, chars_month + chars, today, this_month, user_id)
+               chars_today=$1, chars_month=$2,
+               reset_date=$3, reset_month=$4,
+               updated_at=NOW()
+               WHERE id=$5""",
+            chars_today + chars, chars_month + chars, today, this_month, user_id
         )
-        await db.commit()
         return True, ""
 
 
 async def get_user_stats(user_id: int) -> dict:
-    """Возвращает статистику использования."""
     from plans import PLANS
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        cur = await db.execute("SELECT * FROM users WHERE id=?", (user_id,))
-        user = dict(await cur.fetchone())
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT * FROM users WHERE id=$1", user_id)
 
-    today = str(date.today())
-    this_month = today[:7]
-    plan = PLANS.get(user["plan"], PLANS["free"])
+    today = date.today()
+    this_month = today.strftime("%Y-%m")
+    plan = PLANS.get(row["plan"], PLANS["free"])
 
-    chars_today = user["chars_today"] if user["reset_date"] == today else 0
-    chars_month = user["chars_month"] if user["reset_month"] == this_month else 0
+    chars_today = row["chars_today"] if row["reset_date"] == today else 0
+    chars_month = row["chars_month"] if row["reset_month"] == this_month else 0
 
     return {
-        "plan": user["plan"],
+        "plan": row["plan"],
         "plan_name": plan["name"],
         "chars_today": chars_today,
         "chars_month": chars_month,
@@ -178,188 +176,153 @@ async def activate_subscription(
     provider: str, provider_id: str,
     amount: float, currency: str
 ) -> None:
-    """Активирует подписку пользователя."""
-    if period == "year":
-        expires = datetime.utcnow() + timedelta(days=365)
-    else:
-        expires = datetime.utcnow() + timedelta(days=31)
-
-    async with aiosqlite.connect(DB_PATH) as db:
-        # Деактивируем старую подписку
-        await db.execute(
-            "UPDATE subscriptions SET status='expired' WHERE user_id=? AND status='active'",
-            (user_id,)
-        )
-        # Добавляем новую
-        await db.execute(
-            """INSERT INTO subscriptions
-               (user_id, plan, status, provider, expires_at, amount, currency)
-               VALUES (?, ?, 'active', ?, ?, ?, ?)""",
-            (user_id, plan, provider, expires.isoformat(), amount, currency)
-        )
-        # Записываем платёж
-        await db.execute(
-            """INSERT INTO payments
-               (user_id, provider, provider_id, amount, currency, plan, period, status)
-               VALUES (?, ?, ?, ?, ?, ?, ?, 'successful')""",
-            (user_id, provider, provider_id, amount, currency, plan, period)
-        )
-        # Обновляем план пользователя
-        await db.execute(
-            "UPDATE users SET plan=?, updated_at=datetime('now') WHERE id=?",
-            (plan, user_id)
-        )
-        await db.commit()
+    expires = datetime.utcnow() + (timedelta(days=365) if period == "year" else timedelta(days=31))
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                "UPDATE subscriptions SET status='expired' WHERE user_id=$1 AND status='active'",
+                user_id
+            )
+            await conn.execute(
+                """INSERT INTO subscriptions (user_id, plan, status, provider, expires_at, amount, currency)
+                   VALUES ($1,$2,'active',$3,$4,$5,$6)""",
+                user_id, plan, provider, expires, amount, currency
+            )
+            await conn.execute(
+                """INSERT INTO payments (user_id, provider, provider_id, amount, currency, plan, period, status)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,'successful')""",
+                user_id, provider, provider_id, amount, currency, plan, period
+            )
+            await conn.execute(
+                "UPDATE users SET plan=$1, updated_at=NOW() WHERE id=$2",
+                plan, user_id
+            )
     logger.info("Подписка активирована: user=%s plan=%s период=%s", user_id, plan, period)
 
 
 async def check_expired_subscriptions() -> list[int]:
-    """Ищет истёкшие подписки, возвращает список user_id."""
-    now = datetime.utcnow().isoformat()
-    expired_users = []
-    async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute(
-            "SELECT user_id FROM subscriptions WHERE status='active' AND expires_at < ?",
-            (now,)
-        )
-        rows = await cur.fetchall()
-        for row in rows:
-            expired_users.append(row[0])
-            await db.execute(
-                "UPDATE subscriptions SET status='expired' WHERE user_id=? AND status='active'",
-                (row[0],)
+    pool = await get_pool()
+    expired = []
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            rows = await conn.fetch(
+                "SELECT user_id FROM subscriptions WHERE status='active' AND expires_at < NOW()"
             )
-            await db.execute(
-                "UPDATE users SET plan='free', updated_at=datetime('now') WHERE id=?",
-                (row[0],)
-            )
-        await db.commit()
-    return expired_users
+            for row in rows:
+                expired.append(row["user_id"])
+                await conn.execute(
+                    "UPDATE subscriptions SET status='expired' WHERE user_id=$1 AND status='active'",
+                    row["user_id"]
+                )
+                await conn.execute(
+                    "UPDATE users SET plan='free', updated_at=NOW() WHERE id=$1",
+                    row["user_id"]
+                )
+    return expired
 
 
 # ── Админ-функции ─────────────────────────────────────────────────────────────
 
-async def admin_grant_plan(
-    user_id: int, plan: str, days: int
-) -> None:
-    """Выдаёт план пользователю бесплатно на указанное количество дней."""
+async def admin_grant_plan(user_id: int, plan: str, days: int) -> None:
     expires = datetime.utcnow() + timedelta(days=days)
-    async with aiosqlite.connect(DB_PATH) as db:
-        # Деактивируем предыдущую подписку
-        await db.execute(
-            "UPDATE subscriptions SET status='expired' WHERE user_id=? AND status='active'",
-            (user_id,)
-        )
-        await db.execute(
-            """INSERT INTO subscriptions
-               (user_id, plan, status, provider, expires_at, amount, currency)
-               VALUES (?, ?, 'active', 'admin', ?, 0, 'FREE')""",
-            (user_id, plan, expires.isoformat())
-        )
-        await db.execute(
-            "UPDATE users SET plan=?, updated_at=datetime('now') WHERE id=?",
-            (plan, user_id)
-        )
-        await db.commit()
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                "UPDATE subscriptions SET status='expired' WHERE user_id=$1 AND status='active'",
+                user_id
+            )
+            await conn.execute(
+                """INSERT INTO subscriptions (user_id, plan, status, provider, expires_at, amount, currency)
+                   VALUES ($1,$2,'active','admin',$3,0,'FREE')""",
+                user_id, plan, expires
+            )
+            await conn.execute(
+                "UPDATE users SET plan=$1, updated_at=NOW() WHERE id=$2",
+                plan, user_id
+            )
     logger.info("Админ выдал план: user=%s plan=%s дней=%s", user_id, plan, days)
 
 
 async def admin_revoke_plan(user_id: int) -> None:
-    """Сбрасывает план пользователя до бесплатного."""
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            "UPDATE subscriptions SET status='revoked' WHERE user_id=? AND status='active'",
-            (user_id,)
-        )
-        await db.execute(
-            "UPDATE users SET plan='free', updated_at=datetime('now') WHERE id=?",
-            (user_id,)
-        )
-        await db.commit()
-    logger.info("Админ отозвал план у user=%s", user_id)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                "UPDATE subscriptions SET status='revoked' WHERE user_id=$1 AND status='active'",
+                user_id
+            )
+            await conn.execute(
+                "UPDATE users SET plan='free', updated_at=NOW() WHERE id=$1",
+                user_id
+            )
 
 
 async def admin_ban_user(user_id: int) -> None:
-    """Банит пользователя (устанавливает plan='banned')."""
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            "UPDATE users SET plan='banned', updated_at=datetime('now') WHERE id=?",
-            (user_id,)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE users SET plan='banned', updated_at=NOW() WHERE id=$1", user_id
         )
-        await db.commit()
 
 
 async def admin_unban_user(user_id: int) -> None:
-    """Разбанивает пользователя (возвращает на free)."""
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            "UPDATE users SET plan='free', updated_at=datetime('now') WHERE id=?",
-            (user_id,)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE users SET plan='free', updated_at=NOW() WHERE id=$1", user_id
         )
-        await db.commit()
 
 
 async def admin_get_stats() -> dict:
-    """Общая статистика бота."""
-    async with aiosqlite.connect(DB_PATH) as db:
-        total   = (await (await db.execute("SELECT COUNT(*) FROM users")).fetchone())[0]
-        paid    = (await (await db.execute(
-            "SELECT COUNT(*) FROM users WHERE plan IN ('basic','pro')"
-        )).fetchone())[0]
-        banned  = (await (await db.execute(
-            "SELECT COUNT(*) FROM users WHERE plan='banned'"
-        )).fetchone())[0]
-        today   = str(date.today())
-        new_today = (await (await db.execute(
-            "SELECT COUNT(*) FROM users WHERE reset_date=?", (today,)
-        )).fetchone())[0]
-        payments_total = (await (await db.execute(
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        total    = await conn.fetchval("SELECT COUNT(*) FROM users")
+        paid     = await conn.fetchval("SELECT COUNT(*) FROM users WHERE plan IN ('basic','pro')")
+        banned   = await conn.fetchval("SELECT COUNT(*) FROM users WHERE plan='banned'")
+        new_today = await conn.fetchval(
+            "SELECT COUNT(*) FROM users WHERE reset_date=CURRENT_DATE"
+        )
+        payments_total = await conn.fetchval(
             "SELECT COUNT(*) FROM payments WHERE status='successful'"
-        )).fetchone())[0]
+        )
     return {
-        "total": total,
-        "paid": paid,
+        "total": total, "paid": paid,
         "free": total - paid - banned,
-        "banned": banned,
-        "new_today": new_today,
+        "banned": banned, "new_today": new_today,
         "payments_total": payments_total,
     }
 
 
 async def admin_get_user_info(user_id: int) -> dict | None:
-    """Информация о конкретном пользователе."""
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        cur = await db.execute("SELECT * FROM users WHERE id=?", (user_id,))
-        row = await cur.fetchone()
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT * FROM users WHERE id=$1", user_id)
         if not row:
             return None
         user = dict(row)
-        cur2 = await db.execute(
-            "SELECT * FROM subscriptions WHERE user_id=? ORDER BY started_at DESC LIMIT 3",
-            (user_id,)
+        subs = await conn.fetch(
+            "SELECT * FROM subscriptions WHERE user_id=$1 ORDER BY started_at DESC LIMIT 3",
+            user_id
         )
-        subs = [dict(r) for r in await cur2.fetchall()]
-        user["subscriptions"] = subs
+        user["subscriptions"] = [dict(s) for s in subs]
         return user
 
 
 async def admin_list_users(limit: int = 20, offset: int = 0) -> list[dict]:
-    """Список последних пользователей."""
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        cur = await db.execute(
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
             "SELECT id, username, first_name, plan, created_at FROM users "
-            "ORDER BY created_at DESC LIMIT ? OFFSET ?",
-            (limit, offset)
+            "ORDER BY created_at DESC LIMIT $1 OFFSET $2",
+            limit, offset
         )
-        return [dict(r) for r in await cur.fetchall()]
+        return [dict(r) for r in rows]
 
 
 async def get_all_user_ids() -> list[int]:
-    """Все user_id для рассылки."""
-    async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute(
-            "SELECT id FROM users WHERE plan != 'banned'"
-        )
-        return [row[0] for row in await cur.fetchall()]
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("SELECT id FROM users WHERE plan != 'banned'")
+        return [r["id"] for r in rows]

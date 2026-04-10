@@ -163,8 +163,17 @@ async def cmd_status(message: Message):
         f"Сегодня: {day_info} символов\n"
         f"В этом месяце: {month_info}\n\n"
         f"💡 /plans — сменить тариф",
-        parse_mode="Markdown"
+        parse_mode="Markdown",
+        reply_markup=MAIN_KEYBOARD
     )
+
+
+@router.message(F.text.in_({"/menu", "📋 Меню"}))
+async def cmd_menu(message: Message):
+    """Возвращает кнопки меню если пользователь их закрыл."""
+    if not _is_allowed(message):
+        return
+    await message.answer("👇 Кнопки меню восстановлены", reply_markup=MAIN_KEYBOARD)
 
 
 @router.message(F.text == "/plans")
@@ -336,16 +345,17 @@ async def handle_text(message: Message):
     text = message.text.strip()
 
     if not rate_limiter.is_allowed(user_id):
-        await message.answer("⏳ Слишком много запросов. Подожди немного.")
+        await message.answer("⏳ Слишком много запросов. Подожди немного.", reply_markup=MAIN_KEYBOARD)
         return
 
     if not text:
-        await message.answer("Пустое сообщение.")
+        await message.answer("Пустое сообщение.", reply_markup=MAIN_KEYBOARD)
         return
 
     if len(text) > MAX_TEXT_LENGTH:
         await message.answer(
-            f"⛔ Текст слишком длинный ({len(text):,} символов). Максимум — {MAX_TEXT_LENGTH:,}."
+            f"⛔ Текст слишком длинный ({len(text):,} символов). Максимум — {MAX_TEXT_LENGTH:,}.",
+            reply_markup=MAIN_KEYBOARD
         )
         return
 
@@ -365,13 +375,14 @@ async def handle_text(message: Message):
         await message.answer(
             f"⛔ На тарифе {plan['name']} максимум {plan['max_per_request']:,} символов за запрос.\n"
             f"Твой текст: {len(text):,} символов.\n"
-            f"💡 Обновите тариф: /plans"
+            f"💡 Обновите тариф: /plans",
+            reply_markup=MAIN_KEYBOARD
         )
         return
 
     allowed, err_msg = await check_and_add_chars(user_id, len(text))
     if not allowed:
-        await message.answer(err_msg)
+        await message.answer(err_msg, reply_markup=MAIN_KEYBOARD)
         return
 
     await message.answer("⏳ Обрабатываю...")
